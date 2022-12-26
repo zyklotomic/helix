@@ -60,3 +60,11 @@
 (else_clause
   "else" @outdent)
 
+; A hack to indent the `try:` clause of a try statement since
+; tree-sitter does not recognize a try statement until one of
+; `except.*:` or `finally:` is detected.
+; Unfortunately, the following capture does not handle nested `try:`s.
+(
+  (ERROR) @try_clause
+  (#match? @try_clause "try:")
+) @indent @extend
