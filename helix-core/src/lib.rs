@@ -39,6 +39,7 @@ pub mod unicode {
 pub fn find_first_non_whitespace_char(line: RopeSlice) -> Option<usize> {
     line.chars().position(|ch| !ch.is_whitespace())
 }
+mod rope_reader;
 
 /// Find project root.
 ///
@@ -85,6 +86,7 @@ pub fn find_root(root: Option<&str>, root_markers: &[String]) -> std::path::Path
     top_marker.map_or(current_dir, |a| a.to_path_buf())
 }
 
+pub use rope_reader::RopeReader;
 pub use ropey::{self, str_utils, Rope, RopeBuilder, RopeSlice};
 
 // pub use tendril::StrTendril as Tendril;

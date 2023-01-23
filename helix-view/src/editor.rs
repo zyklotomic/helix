@@ -20,7 +20,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use std::{
     borrow::Cow,
     cell::Cell,
-    collections::{BTreeMap, HashMap},
+    collections::{btree_map, BTreeMap, HashMap},
     io::stdin,
     num::NonZeroUsize,
     path::{Path, PathBuf},
@@ -40,12 +40,12 @@ use anyhow::{anyhow, bail, Error};
 
 pub use helix_core::diagnostic::Severity;
 pub use helix_core::register::Registers;
-use helix_core::Position;
 use helix_core::{
     auto_pairs::AutoPairs,
     syntax::{self, AutoPairConfig},
     Change,
 };
+use helix_core::{Position, Rope};
 use helix_dap as dap;
 use helix_lsp::lsp;
 
@@ -798,6 +798,26 @@ pub struct Breakpoint {
 
 use futures_util::stream::{Flatten, Once};
 
+/// Threadsave (Sync + Send) iteration over document text (and path)
+/// This is necessary because the editor and the document contain
+/// interior mutability which makes it impossible to send them across threads.
+/// However the document text itself (ropes) is perfectly fine to send across
+/// threads
+#[derive(Clone)]
+pub struct SharedDocuments<'a>(btree_map::Values<'a, DocumentId, Document>);
+
+unsafe impl Sync for SharedDocuments<'_> {}
+unsafe impl Send for SharedDocuments<'_> {}
+
+impl<'a> Iterator for SharedDocuments<'a> {
+    type Item = (Option<&'a PathBuf>, &'a Rope);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let doc = self.0.next()?;
+        Some((doc.path(), doc.text()))
+    }
+}
+
 pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
@@ -1482,6 +1502,12 @@ impl Editor {
     #[inline]
     pub fn documents_mut(&mut self) -> impl Iterator<Item = &mut Document> {
         self.documents.values_mut()
+    }
+
+    /// A thread save iterator over the text of all documents
+    #[inline]
+    pub fn shared_documents(&self) -> SharedDocuments {
+        SharedDocuments(self.documents.values())
     }
 
     pub fn document_by_path<P: AsRef<Path>>(&self, path: P) -> Option<&Document> {

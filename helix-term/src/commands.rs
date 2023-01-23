@@ -26,8 +26,8 @@ use helix_core::{
     textobject,
     tree_sitter::Node,
     unicode::width::UnicodeWidthChar,
-    visual_offset_from_block, LineEnding, Position, Range, Rope, RopeGraphemes, RopeSlice,
-    Selection, SmallVec, Tendril, Transaction,
+    visual_offset_from_block, LineEnding, Position, Range, Rope, RopeGraphemes, RopeReader,
+    RopeSlice, Selection, SmallVec, Tendril, Transaction,
 };
 use helix_view::{
     clipboard::ClipboardType,
@@ -1998,10 +1998,12 @@ fn global_search(cx: &mut Context) {
                 .map(|comp| (0.., std::borrow::Cow::Owned(comp.clone())))
                 .collect()
         },
-        move |_editor, regex, event| {
+        move |editor, regex, event| {
             if event != PromptEvent::Validate {
                 return;
             }
+
+            let documents = editor.shared_documents();
 
             if let Ok(matcher) = RegexMatcherBuilder::new()
                 .case_smart(smart_case)
@@ -2031,6 +2033,7 @@ fn global_search(cx: &mut Context) {
                         let mut searcher = searcher.clone();
                         let matcher = matcher.clone();
                         let all_matches_sx = all_matches_sx.clone();
+                        let documents = &documents;
                         Box::new(move |entry: Result<DirEntry, ignore::Error>| -> WalkState {
                             let entry = match entry {
                                 Ok(entry) => entry,
@@ -2043,17 +2046,36 @@ fn global_search(cx: &mut Context) {
                                 _ => return WalkState::Continue,
                             };
 
-                            let result = searcher.search_path(
-                                &matcher,
-                                entry.path(),
-                                sinks::UTF8(|line_num, _| {
-                                    all_matches_sx
-                                        .send(FileResult::new(entry.path(), line_num as usize - 1))
-                                        .unwrap();
+                            let sink = sinks::UTF8(|line_num, _| {
+                                all_matches_sx
+                                    .send(FileResult::new(entry.path(), line_num as usize - 1))
+                                    .unwrap();
 
-                                    Ok(true)
-                                }),
-                            );
+                                Ok(true)
+                            });
+                            let doc = documents.clone().find(|(doc_path, _)| {
+                                doc_path.map_or(false, |doc_path| doc_path == entry.path())
+                            });
+
+                            let result = if let Some((_, doc)) = doc {
+                                // there is already a buffer for this file
+                                // search the buffer instead of the file because it's faster
+                                // and captures new edits without requireing a save
+                                if searcher.multi_line_with_matcher(&matcher) {
+                                    // in this case a continous buffer is required
+                                    // convert the rope to a string
+                                    let text = doc.to_string();
+                                    searcher.search_slice(&matcher, text.as_bytes(), sink)
+                                } else {
+                                    searcher.search_reader(
+                                        &matcher,
+                                        RopeReader::new(doc.slice(..)),
+                                        sink,
+                                    )
+                                }
+                            } else {
+                                searcher.search_path(&matcher, entry.path(), sink)
+                            };
 
                             if let Err(err) = result {
                                 log::error!(
